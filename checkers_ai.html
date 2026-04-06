@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cyber-Checkers AI | Smart Desk</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --neon-red: #ff3131;
+            --neon-green: #39ff14;
+            --bg-dark: #050505;
+            --board-dark: #1a1a1a;
+            --board-light: #0a0a0a;
+        }
+
+        body, html {
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
+            background-color: var(--bg-dark);
+            color: white;
+            font-family: 'Rajdhani', sans-serif;
+            overflow: hidden;
+            cursor: none;
+        }
+
+        #output_canvas {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 1000;
+            pointer-events: none;
+            opacity: 0.4;
+        }
+
+        #cursor {
+            position: fixed;
+            width: 25px; height: 25px;
+            border: 2px solid white;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 9999;
+            pointer-events: none;
+            box-shadow: 0 0 15px white;
+        }
+
+        .ui-layer {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #game-header {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        #status-bar {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 1.5rem;
+            padding: 10px 30px;
+            border: 1px solid var(--neon-green);
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            background: rgba(0,0,0,0.8);
+            min-width: 300px;
+        }
+
+        .turn-red { border-color: var(--neon-red) !important; color: var(--neon-red); }
+        .turn-green { border-color: var(--neon-green) !important; color: var(--neon-green); }
+
+        #board {
+            display: grid;
+            grid-template-columns: repeat(8, 70px);
+            grid-template-rows: repeat(8, 70px);
+            border: 5px solid #333;
+            position: relative;
+        }
+
+        .cell { width: 70px; height: 70px; display: flex; align-items: center; justify-content: center; }
+        .cell.dark { background-color: var(--board-dark); }
+        .cell.light { background-color: var(--board-light); }
+
+        .piece {
+            width: 50px; height: 50px;
+            border-radius: 50%;
+            position: relative;
+            transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        }
+
+        .piece.red {
+            background: radial-gradient(circle, #ff5f5f 0%, var(--neon-red) 100%);
+            box-shadow: 0 0 15px var(--neon-red);
+        }
+
+        .piece.green {
+            background: radial-gradient(circle, #7dff6a 0%, var(--neon-green) 100%);
+            box-shadow: 0 0 15px var(--neon-green);
+        }
+
+        .piece.king::after {
+            content: 'K';
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-family: 'Orbitron';
+            font-weight: bold;
+            color: rgba(0,0,0,0.8);
+        }
+
+        #input_video { display: none; }
+
+        .grabbed {
+            position: fixed;
+            pointer-events: none;
+            z-index: 2000;
+            transform: translate(-50%, -50%) scale(1.3);
+            opacity: 0.8;
+        }
+    </style>
+</head>
+<body>
+    <video id="input_video"></video>
+    <canvas id="output_canvas"></canvas>
+    <div id="cursor"></div>
+
+    <div class="ui-layer">
+        <div id="game-header">
+            <div id="status-bar" class="turn-green">USER_TURN</div>
+        </div>
+        <div id="board"></div>
+    </div>
+
+    <script>
+        const boardElement = document.getElementById('board');
+        const statusBar = document.getElementById('status-bar');
+        const cursor = document.getElementById('cursor');
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+
+        let turn = 'green'; 
+        let boardState = [];
+        let isPinching = false;
+        let grabbedPiece = null;
+        let startCell = null;
+        let gameActive = true;
+
+        function initBoard() {
+            boardState = Array(8).fill().map(() => Array(8).fill(null));
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    if ((r + c) % 2 !== 0) {
+                        if (r < 3) boardState[r][c] = { color: 'red', king: false };
+                        if (r > 4) boardState[r][c] = { color: 'green', king: false };
+                    }
+                }
+            }
+            renderBoard();
+        }
+
+        function renderBoard() {
+            boardElement.innerHTML = '';
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    const cell = document.createElement('div');
+                    cell.className = `cell ${(r + c) % 2 === 0 ? 'light' : 'dark'}`;
+                    cell.dataset.row = r;
+                    cell.dataset.col = c;
+
+                    const pieceData = boardState[r][c];
+                    if (pieceData) {
+                        // Don't render the piece if it's currently being "dragged" by user
+                        if (!(grabbedPiece && grabbedPiece.r === r && grabbedPiece.c === c)) {
+                            const p = document.createElement('div');
+                            p.className = `piece ${pieceData.color} ${pieceData.king ? 'king' : ''}`;
+                            cell.appendChild(p);
+                        }
+                    }
+                    boardElement.appendChild(cell);
+                }
+            }
+        }
+
+        function handlePinchStart(x, y) {
+            if (turn !== 'green' || !gameActive) return;
+
+            const el = document.elementFromPoint(x, y);
+            const cell = el?.closest('.cell');
+            if (!cell) return;
+
+            const r = parseInt(cell.dataset.row);
+            const c = parseInt(cell.dataset.col);
+            const piece = boardState[r][c];
+
+            if (piece && piece.color === 'green') {
+                grabbedPiece = { ...piece, r, c };
+                startCell = { r, c };
+                
+                const ghost = document.createElement('div');
+                ghost.id = 'ghost-piece';
+                ghost.className = `piece green ${piece.king ? 'king' : ''} grabbed`;
+                ghost.style.left = x + 'px';
+                ghost.style.top = y + 'px';
+                document.body.appendChild(ghost);
+                renderBoard();
+            }
+        }
+
+        function handlePinchMove(x, y) {
+            const ghost = document.getElementById('ghost-piece');
+            if (ghost) {
+                ghost.style.left = x + 'px';
+                ghost.style.top = y + 'px';
+            }
+        }
+
+        function handlePinchEnd(x, y) {
+            if (!grabbedPiece) return;
+            const ghost = document.getElementById('ghost-piece');
+            if (ghost) ghost.remove();
+
+            const el = document.elementFromPoint(x, y);
+            const cell = el?.closest('.cell');
+
+            if (cell) {
+                const endR = parseInt(cell.dataset.row);
+                const endC = parseInt(cell.dataset.col);
+                if (isValidMove(boardState, startCell.r, startCell.c, endR, endC)) {
+                    executeMove(startCell.r, startCell.c, endR, endC);
+                    if (gameActive) setTimeout(triggerAI, 800);
+                }
+            }
+
+            grabbedPiece = null;
+            renderBoard();
+        }
+
+        function isValidMove(state, sr, sc, er, ec) {
+            if (er < 0 || er > 7 || ec < 0 || ec > 7) return false;
+            if (state[er][ec] !== null) return false;
+            if ((er + ec) % 2 === 0) return false;
+
+            const piece = state[sr][sc];
+            const rowDiff = er - sr;
+            const colDiff = Math.abs(ec - sc);
+
+            const isForward = piece.color === 'green' ? rowDiff === -1 : rowDiff === 1;
+            if ((isForward || piece.king) && Math.abs(rowDiff) === 1 && colDiff === 1) return true;
+
+            const isJumpForward = piece.color === 'green' ? rowDiff === -2 : rowDiff === 2;
+            if ((isJumpForward || piece.king) && Math.abs(rowDiff) === 2 && colDiff === 2) {
+                const midR = sr + rowDiff / 2;
+                const midC = sc + (ec - sc) / 2;
+                const victim = state[midR][midC];
+                return victim && victim.color !== piece.color;
+            }
+            return false;
+        }
+
+        function executeMove(sr, sc, er, ec) {
+            const piece = boardState[sr][sc];
+            boardState[er][ec] = piece;
+            boardState[sr][sc] = null;
+
+            if (Math.abs(er - sr) === 2) {
+                boardState[sr + (er - sr) / 2][sc + (ec - sc) / 2] = null;
+            }
+
+            if ((piece.color === 'green' && er === 0) || (piece.color === 'red' && er === 7)) {
+                piece.king = true;
+            }
+
+            turn = turn === 'green' ? 'red' : 'green';
+            statusBar.innerText = turn === 'green' ? 'USER_TURN' : 'NEURAL_LINK_THINKING';
+            statusBar.className = `turn-${turn}`;
+            renderBoard();
+            checkWin();
+        }
+
+        // AI Logic
+        function triggerAI() {
+            if (!gameActive) return;
+            let bestMove = null;
+            let bestVal = -Infinity;
+            const possibleMoves = [];
+
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    if (boardState[r][c]?.color === 'red') {
+                        [-2, -1, 1, 2].forEach(dr => {
+                            [-2, -1, 1, 2].forEach(dc => {
+                                if (isValidMove(boardState, r, c, r + dr, c + dc)) {
+                                    possibleMoves.push({ sr: r, sc: c, er: r + dr, ec: c + dc });
+                                }
+                            });
+                        });
+                    }
+                }
+            }
+
+            if (possibleMoves.length > 0) {
+                // Simple priority: jumps first
+                const jumps = possibleMoves.filter(m => Math.abs(m.er - m.sr) === 2);
+                const move = jumps.length > 0 ? jumps[Math.floor(Math.random() * jumps.length)] : possibleMoves[Math.floor(Math.random() * possibleMoves.length)];
+                executeMove(move.sr, move.sc, move.er, move.ec);
+            }
+        }
+
+        function checkWin() {
+            const pieces = boardState.flat().filter(p => p !== null);
+            const redCount = pieces.filter(p => p.color === 'red').length;
+            const greenCount = pieces.filter(p => p.color === 'green').length;
+
+            if (redCount === 0 || greenCount === 0) {
+                gameActive = false;
+                const winner = redCount === 0 ? 'USER' : 'SYSTEM';
+                statusBar.innerText = `${winner}_WINS`;
+                confetti({
+                    particleCount: 150,
+                    spread: 70,
+                    origin: { y: 0.6 },
+                    colors: winner === 'USER' ? ['#39ff14', '#ffffff'] : ['#ff3131', '#ffffff']
+                });
+            }
+        }
+
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#ffffff', lineWidth: 1});
+                drawLandmarks(canvasCtx, landmarks, {color: turn === 'green' ? '#39ff14' : '#ff3131', radius: 3});
+
+                const x = landmarks[8].x * window.innerWidth;
+                const y = landmarks[8].y * window.innerHeight;
+                cursor.style.left = x + 'px';
+                cursor.style.top = y + 'px';
+
+                const dist = Math.hypot(landmarks[8].x - landmarks[4].x, landmarks[8].y - landmarks[4].y);
+                if (dist < 0.05) {
+                    if (!isPinching) { isPinching = true; handlePinchStart(x, y); }
+                    handlePinchMove(x, y);
+                } else if (isPinching) { isPinching = false; handlePinchEnd(x, y); }
+            }
+            canvasCtx.restore();
+        }
+
+        const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.7, minTrackingConfidence: 0.7 });
+        hands.onResults(onResults);
+        const camera = new Camera(videoElement, { onFrame: async () => { await hands.send({image: videoElement}); }, width: 1280, height: 720 });
+
+        window.onload = () => {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+            initBoard();
+            camera.start();
+        };
+    </script>
+</body>
+</html>

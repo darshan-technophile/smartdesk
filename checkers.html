@@ -1,0 +1,402 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cyber-Checkers | Smart Desk</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --neon-red: #ff3131;
+            --neon-green: #39ff14;
+            --bg-dark: #050505;
+            --board-dark: #1a1a1a;
+            --board-light: #0a0a0a;
+        }
+
+        body, html {
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
+            background-color: var(--bg-dark);
+            color: white;
+            font-family: 'Rajdhani', sans-serif;
+            overflow: hidden;
+            cursor: none;
+        }
+
+        #output_canvas {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 1000;
+            pointer-events: none;
+            opacity: 0.4;
+        }
+
+        #cursor {
+            position: fixed;
+            width: 25px; height: 25px;
+            border: 2px solid white;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 9999;
+            pointer-events: none;
+            box-shadow: 0 0 15px white;
+        }
+
+        .ui-layer {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100%; height: 100%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #game-header {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        #status-bar {
+            font-family: 'Orbitron', sans-serif;
+            font-size: 1.5rem;
+            padding: 10px 30px;
+            border: 1px solid var(--neon-green);
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            background: rgba(0,0,0,0.8);
+        }
+
+        .turn-red { border-color: var(--neon-red) !important; color: var(--neon-red); }
+        .turn-green { border-color: var(--neon-green) !important; color: var(--neon-green); }
+
+        /* Board Styling */
+        #board {
+            display: grid;
+            grid-template-columns: repeat(8, 80px);
+            grid-template-rows: repeat(8, 80px);
+            border: 5px solid #333;
+            box-shadow: 0 0 50px rgba(0,0,0,0.5);
+            position: relative;
+        }
+
+        .cell {
+            width: 80px;
+            height: 80px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .cell.dark { background-color: var(--board-dark); }
+        .cell.light { background-color: var(--board-light); }
+
+        .piece {
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
+            position: relative;
+            transition: transform 0.1s;
+            box-sizing: border-box;
+        }
+
+        .piece.red {
+            background: radial-gradient(circle, #ff5f5f 0%, var(--neon-red) 100%);
+            box-shadow: 0 0 15px var(--neon-red);
+            border: 2px solid #500;
+        }
+
+        .piece.green {
+            background: radial-gradient(circle, #7dff6a 0%, var(--neon-green) 100%);
+            box-shadow: 0 0 15px var(--neon-green);
+            border: 2px solid #050;
+        }
+
+        .piece.king::after {
+            content: 'K';
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-family: 'Orbitron';
+            font-weight: bold;
+            color: rgba(0,0,0,0.7);
+        }
+
+        #input_video { display: none; }
+
+        .grabbed {
+            position: fixed;
+            pointer-events: none;
+            z-index: 2000;
+            transform: translate(-50%, -50%) scale(1.2);
+        }
+    </style>
+</head>
+<body>
+    <video id="input_video"></video>
+    <canvas id="output_canvas"></canvas>
+    <div id="cursor"></div>
+
+    <div class="ui-layer">
+        <div id="game-header">
+            <div id="status-bar" class="turn-green">GREEN'S TURN</div>
+        </div>
+        <div id="board"></div>
+    </div>
+
+    <script>
+        const boardElement = document.getElementById('board');
+        const statusBar = document.getElementById('status-bar');
+        const cursor = document.getElementById('cursor');
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+
+        let turn = 'green'; // Green (Bottom) vs Red (Top)
+        let boardState = [];
+        let isPinching = false;
+        let grabbedPiece = null;
+        let startCell = null;
+
+        // Initialize Board
+        function initBoard() {
+            boardState = Array(8).fill().map(() => Array(8).fill(null));
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    if ((r + c) % 2 !== 0) {
+                        if (r < 3) boardState[r][c] = { color: 'red', king: false };
+                        if (r > 4) boardState[r][c] = { color: 'green', king: false };
+                    }
+                }
+            }
+            renderBoard();
+        }
+
+        function renderBoard() {
+            boardElement.innerHTML = '';
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    const cell = document.createElement('div');
+                    cell.className = `cell ${(r + c) % 2 === 0 ? 'light' : 'dark'}`;
+                    cell.dataset.row = r;
+                    cell.dataset.col = c;
+
+                    const pieceData = boardState[r][c];
+                    if (pieceData && grabbedPiece?.r !== r || pieceData && grabbedPiece?.c !== c) {
+                        if (!(grabbedPiece && grabbedPiece.r === r && grabbedPiece.c === c)) {
+                            const p = document.createElement('div');
+                            p.className = `piece ${pieceData.color} ${pieceData.king ? 'king' : ''}`;
+                            cell.appendChild(p);
+                        }
+                    }
+                    boardElement.appendChild(cell);
+                }
+            }
+        }
+
+        function handlePinchStart(x, y) {
+            const el = document.elementFromPoint(x, y);
+            const cell = el?.closest('.cell');
+            if (!cell) return;
+
+            const r = parseInt(cell.dataset.row);
+            const c = parseInt(cell.dataset.col);
+            const piece = boardState[r][c];
+
+            if (piece && piece.color === turn) {
+                grabbedPiece = { ...piece, r, c };
+                startCell = { r, c };
+                
+                // Create visual floating piece
+                const ghost = document.createElement('div');
+                ghost.id = 'ghost-piece';
+                ghost.className = `piece ${piece.color} ${piece.king ? 'king' : ''} grabbed`;
+                ghost.style.left = x + 'px';
+                ghost.style.top = y + 'px';
+                document.body.appendChild(ghost);
+                
+                // Hide original piece in board state for rendering
+                renderBoard();
+            }
+        }
+
+        function handlePinchMove(x, y) {
+            const ghost = document.getElementById('ghost-piece');
+            if (ghost) {
+                ghost.style.left = x + 'px';
+                ghost.style.top = y + 'px';
+            }
+        }
+
+        function handlePinchEnd(x, y) {
+            if (!grabbedPiece) return;
+
+            const el = document.elementFromPoint(x, y);
+            const cell = el?.closest('.cell');
+            const ghost = document.getElementById('ghost-piece');
+            if (ghost) ghost.remove();
+
+            if (cell) {
+                const endR = parseInt(cell.dataset.row);
+                const endC = parseInt(cell.dataset.col);
+                
+                if (isValidMove(startCell.r, startCell.c, endR, endC)) {
+                    executeMove(startCell.r, startCell.c, endR, endC);
+                }
+            }
+
+            grabbedPiece = null;
+            startCell = null;
+            renderBoard();
+        }
+
+        function isValidMove(sr, sc, er, ec) {
+            if (boardState[er][ec] !== null) return false;
+            if ((er + ec) % 2 === 0) return false;
+
+            const rowDiff = er - sr;
+            const colDiff = Math.abs(ec - sc);
+            const piece = boardState[sr][sc];
+
+            // Standard Move
+            const isForward = piece.color === 'green' ? rowDiff === -1 : rowDiff === 1;
+            if ((isForward || piece.king) && Math.abs(rowDiff) === 1 && colDiff === 1) {
+                return true;
+            }
+
+            // Jump
+            const isJumpForward = piece.color === 'green' ? rowDiff === -2 : rowDiff === 2;
+            if ((isJumpForward || piece.king) && Math.abs(rowDiff) === 2 && colDiff === 2) {
+                const midR = sr + rowDiff / 2;
+                const midC = sc + (ec - sc) / 2;
+                const victim = boardState[midR][midC];
+                return victim && victim.color !== piece.color;
+            }
+
+            return false;
+        }
+
+        function executeMove(sr, sc, er, ec) {
+            const piece = boardState[sr][sc];
+            boardState[er][ec] = piece;
+            boardState[sr][sc] = null;
+
+            // Remove victim if jump
+            if (Math.abs(er - sr) === 2) {
+                boardState[sr + (er - sr) / 2][sc + (ec - sc) / 2] = null;
+            }
+
+            // Kinging
+            if ((piece.color === 'green' && er === 0) || (piece.color === 'red' && er === 7)) {
+                piece.king = true;
+            }
+
+            // Switch Turn
+            turn = turn === 'green' ? 'red' : 'green';
+            statusBar.innerText = `${turn.toUpperCase()}'S TURN`;
+            statusBar.className = `turn-${turn}`;
+            
+            checkWin();
+        }
+
+        function checkWin() {
+            const pieces = boardState.flat().filter(p => p !== null);
+            const redCount = pieces.filter(p => p.color === 'red').length;
+            const greenCount = pieces.filter(p => p.color === 'green').length;
+
+            if (redCount === 0 || greenCount === 0) {
+                const winner = redCount === 0 ? 'GREEN' : 'RED';
+                statusBar.innerText = `${winner} WINS!`;
+                confetti({
+                    particleCount: 150,
+                    spread: 70,
+                    origin: { y: 0.6 },
+                    colors: winner === 'GREEN' ? ['#39ff14', '#ffffff'] : ['#ff3131', '#ffffff']
+                });
+            }
+        }
+
+        // MediaPipe Hand Tracking Logic
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+            
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                
+                drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#ffffff', lineWidth: 2});
+                drawLandmarks(canvasCtx, landmarks, {color: turn === 'green' ? '#39ff14' : '#ff3131', lineWidth: 1, radius: 4});
+
+                const indexTip = landmarks[8];
+                const thumbTip = landmarks[4];
+                
+                // Direct mapping (no inversion as requested)
+                const x = indexTip.x * window.innerWidth;
+                const y = indexTip.y * window.innerHeight;
+
+                cursor.style.left = x + 'px';
+                cursor.style.top = y + 'px';
+
+                const distance = Math.hypot(indexTip.x - thumbTip.x, indexTip.y - thumbTip.y);
+                const pinchThreshold = 0.05;
+
+                if (distance < pinchThreshold) {
+                    if (!isPinching) {
+                        isPinching = true;
+                        cursor.style.transform = 'translate(-50%, -50%) scale(0.6)';
+                        handlePinchStart(x, y);
+                    }
+                    handlePinchMove(x, y);
+                } else {
+                    if (isPinching) {
+                        isPinching = false;
+                        cursor.style.transform = 'translate(-50%, -50%) scale(1)';
+                        handlePinchEnd(x, y);
+                    }
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.8,
+            minTrackingConfidence: 0.8
+        });
+
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 1280,
+            height: 720
+        });
+
+        window.onload = () => {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+            initBoard();
+            camera.start();
+        };
+
+        window.onresize = () => {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+        };
+    </script>
+</body>
+</html>
