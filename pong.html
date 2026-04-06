@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cyber-Pong | Smart Desk</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --matrix-green: #00ff41;
+            --matrix-dark: #003b00;
+            --bg-dark: #050505;
+        }
+
+        body, html {
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
+            background-color: black;
+            color: var(--matrix-green);
+            font-family: 'Courier Prime', monospace;
+            overflow: hidden;
+            cursor: none;
+        }
+
+        #output_canvas {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 10;
+            pointer-events: none;
+            opacity: 0.3;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100vw; height: 100vh;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: black;
+        }
+
+        canvas#gameCanvas {
+            border: 2px solid var(--matrix-green);
+            box-shadow: 0 0 20px rgba(0, 255, 65, 0.2);
+        }
+
+        .ui-overlay {
+            position: absolute;
+            top: 20px;
+            display: flex;
+            justify-content: space-between;
+            width: 600px;
+            font-size: 2rem;
+            text-shadow: 0 0 10px var(--matrix-green);
+            z-index: 5;
+        }
+
+        .menu-overlay {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.9);
+            border: 1px solid var(--matrix-green);
+            padding: 30px;
+            text-align: center;
+            z-index: 100;
+        }
+
+        .btn {
+            display: block;
+            margin: 15px auto;
+            padding: 10px 20px;
+            background: transparent;
+            border: 1px solid var(--matrix-green);
+            color: var(--matrix-green);
+            font-family: 'Courier Prime';
+            font-size: 1.2rem;
+            cursor: pointer;
+            transition: 0.3s;
+        }
+
+        .btn:hover {
+            background: var(--matrix-green);
+            color: black;
+            box-shadow: 0 0 15px var(--matrix-green);
+        }
+
+        #input_video { display: none; }
+        
+        .cursor {
+            position: fixed;
+            width: 15px; height: 15px;
+            border: 1px solid white;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 9999;
+            pointer-events: none;
+        }
+        .pinching { background: var(--matrix-green); box-shadow: 0 0 10px var(--matrix-green); }
+    </style>
+</head>
+<body>
+    <video id="input_video"></video>
+    <canvas id="output_canvas"></canvas>
+    <div id="cursor0" class="cursor"></div>
+    <div id="cursor1" class="cursor"></div>
+
+    <div id="game-container">
+        <div class="ui-overlay">
+            <div id="scoreL">00</div>
+            <div id="mode-indicator">1P_SYSTEM_LINK</div>
+            <div id="scoreR">00</div>
+        </div>
+
+        <div id="menu" class="menu-overlay">
+            <h2>NODE_INITIALIZED</h2>
+            <button class="btn" onclick="startGame('1P')">1P vs SYSTEM</button>
+            <button class="btn" onclick="startGame('2P')">2P LOCAL_LINK</button>
+        </div>
+
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const outputCanvas = document.getElementById('output_canvas');
+        const canvasCtx = outputCanvas.getContext('2d');
+        const videoElement = document.getElementById('input_video');
+        const menu = document.getElementById('menu');
+
+        // Game constants
+        canvas.width = 800;
+        canvas.height = 500;
+        const PADDLE_WIDTH = 10;
+        const PADDLE_HEIGHT = 80;
+        const BALL_SIZE = 8;
+        const AI_SPEED = 4.5;
+
+        let gameState = 'MENU';
+        let mode = '1P'; // '1P' or '2P'
+        let score = { L: 0, r: 0 };
+
+        let paddleL = { y: 210, targetY: 210, isGrabbed: false };
+        let paddleR = { y: 210, targetY: 210, isGrabbed: false };
+        let ball = { x: 400, y: 250, dx: 4, dy: 4 };
+
+        // Matrix Rain Background
+        const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ$+-*/=%";
+        const fontSize = 14;
+        const drops = Array(Math.floor(canvas.width / fontSize)).fill(1);
+
+        function startGame(selectedMode) {
+            mode = selectedMode;
+            document.getElementById('mode-indicator').innerText = mode === '1P' ? '1P_SYSTEM_LINK' : '2P_LOCAL_LINK';
+            score = { L: 0, r: 0 };
+            resetBall();
+            gameState = 'PLAYING';
+            menu.style.display = 'none';
+        }
+
+        function resetBall() {
+            ball.x = canvas.width / 2;
+            ball.y = canvas.height / 2;
+            ball.dx = (Math.random() > 0.5 ? 1 : -1) * 5;
+            ball.dy = (Math.random() * 2 - 1) * 5;
+            document.getElementById('scoreL').innerText = score.L.toString().padStart(2, '0');
+            document.getElementById('scoreR').innerText = score.r.toString().padStart(2, '0');
+        }
+
+        function update() {
+            if (gameState !== 'PLAYING') return;
+
+            // Move Ball
+            ball.x += ball.dx;
+            ball.y += ball.dy;
+
+            // Wall Bounce (Top/Bottom)
+            if (ball.y <= 0 || ball.y >= canvas.height) ball.dy *= -1;
+
+            // Paddle Movement (Smoothing)
+            paddleL.y += (paddleL.targetY - paddleL.y) * 0.2;
+            if (mode === '2P') {
+                paddleR.y += (paddleR.targetY - paddleR.y) * 0.2;
+            } else {
+                // AI logic
+                const aiCenter = paddleR.y + PADDLE_HEIGHT / 2;
+                if (aiCenter < ball.y - 10) paddleR.y += AI_SPEED;
+                else if (aiCenter > ball.y + 10) paddleR.y -= AI_SPEED;
+            }
+
+            // Constrain paddles
+            paddleL.y = Math.max(0, Math.min(canvas.height - PADDLE_HEIGHT, paddleL.y));
+            paddleR.y = Math.max(0, Math.min(canvas.height - PADDLE_HEIGHT, paddleR.y));
+
+            // Paddle Collision
+            if (ball.dx < 0 && ball.x < 30 && ball.y > paddleL.y && ball.y < paddleL.y + PADDLE_HEIGHT) {
+                ball.dx *= -1.1; // Speed up
+                ball.x = 30;
+            }
+            if (ball.dx > 0 && ball.x > canvas.width - 30 && ball.y > paddleR.y && ball.y < paddleR.y + PADDLE_HEIGHT) {
+                ball.dx *= -1.1;
+                ball.x = canvas.width - 30;
+            }
+
+            // Scoring
+            if (ball.x < 0) { score.r++; resetBall(); }
+            if (ball.x > canvas.width) { score.L++; resetBall(); }
+        }
+
+        function draw() {
+            // Clear Canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Matrix Background Rain
+            ctx.fillStyle = "#002200";
+            ctx.font = fontSize + "px monospace";
+            for (let i = 0; i < drops.length; i++) {
+                const text = chars.charAt(Math.floor(Math.random() * chars.length));
+                ctx.fillText(text, i * fontSize, drops[i] * fontSize);
+                if (drops[i] * fontSize > canvas.height && Math.random() > 0.975) drops[i] = 0;
+                drops[i]++;
+            }
+
+            if (gameState === 'PLAYING') {
+                // Center Line (ASCII style)
+                ctx.strokeStyle = "rgba(0, 255, 65, 0.2)";
+                ctx.setLineDash([10, 10]);
+                ctx.beginPath();
+                ctx.moveTo(canvas.width/2, 0);
+                ctx.lineTo(canvas.width/2, canvas.height);
+                ctx.stroke();
+                ctx.setLineDash([]);
+
+                // Draw Paddles
+                ctx.fillStyle = paddleL.isGrabbed ? "white" : "var(--matrix-green)";
+                ctx.fillRect(20, paddleL.y, PADDLE_WIDTH, PADDLE_HEIGHT);
+                
+                ctx.fillStyle = paddleR.isGrabbed ? "white" : "var(--matrix-green)";
+                ctx.fillRect(canvas.width - 30, paddleR.y, PADDLE_WIDTH, PADDLE_HEIGHT);
+
+                // Draw Ball (ASCII character)
+                ctx.fillStyle = "white";
+                ctx.font = "bold 16px monospace";
+                ctx.fillText("[#]", ball.x - 10, ball.y + 5);
+            }
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // MediaPipe Integration
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
+            
+            // Reset grab status each frame before checking hands
+            paddleL.isGrabbed = false;
+            paddleR.isGrabbed = false;
+
+            if (results.multiHandLandmarks) {
+                results.multiHandLandmarks.forEach((landmarks, index) => {
+                    if (index > 1) return; // Only support 2 hands
+
+                    drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#00ff41', lineWidth: 1});
+                    drawLandmarks(canvasCtx, landmarks, {color: '#ffffff', radius: 1});
+
+                    const indexTip = landmarks[8];
+                    const thumbTip = landmarks[4];
+                    
+                    const screenX = indexTip.x * window.innerWidth;
+                    const screenY = indexTip.y * window.innerHeight;
+
+                    const cursor = document.getElementById(`cursor${index}`);
+                    cursor.style.left = screenX + 'px';
+                    cursor.style.top = screenY + 'px';
+
+                    // Pinch detection
+                    const distance = Math.hypot(indexTip.x - thumbTip.x, indexTip.y - thumbTip.y);
+                    const isPinching = distance < 0.05;
+
+                    if (isPinching) cursor.classList.add('pinching');
+                    else cursor.classList.remove('pinching');
+
+                    // Map Hand to Paddle
+                    // Hand index might swap depending on detection, so we map based on screen side
+                    const isLeftSide = indexTip.x < 0.5;
+                    const gameY = indexTip.y * canvas.height - (PADDLE_HEIGHT / 2);
+
+                    if (isLeftSide) {
+                        paddleL.isGrabbed = isPinching;
+                        if (isPinching) paddleL.targetY = gameY;
+                    } else if (mode === '2P') {
+                        paddleR.isGrabbed = isPinching;
+                        if (isPinching) paddleR.targetY = gameY;
+                    }
+                });
+            }
+
+            // Hide unused cursors
+            const handCount = results.multiHandLandmarks ? results.multiHandLandmarks.length : 0;
+            document.getElementById('cursor0').style.display = handCount > 0 ? 'block' : 'none';
+            document.getElementById('cursor1').style.display = handCount > 1 ? 'block' : 'none';
+
+            canvasCtx.restore();
+        }
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 1280, height: 720
+        });
+
+        window.onload = () => {
+            outputCanvas.width = window.innerWidth;
+            outputCanvas.height = window.innerHeight;
+            camera.start();
+            gameLoop();
+        };
+
+        window.onresize = () => {
+            outputCanvas.width = window.innerWidth;
+            outputCanvas.height = window.innerHeight;
+        };
+    </script>
+</body>
+</html>
