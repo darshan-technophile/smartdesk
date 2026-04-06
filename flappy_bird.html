@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cyber-Flap | Smart Desk</title>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Courier+Prime:wght@400;700&display=swap" rel="stylesheet">
+    
+    <style>
+        :root {
+            --matrix-green: #00ff41;
+            --matrix-dark: #003b00;
+            --neon-pink: #00ff41;
+            --bg-dark: #050505;
+        }
+
+        body, html {
+            margin: 0; padding: 0;
+            width: 100%; height: 100%;
+            background-color: black;
+            color: white;
+            font-family: 'Courier Prime', monospace;
+            overflow: hidden;
+            cursor: none;
+        }
+
+        #output_canvas {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 10;
+            pointer-events: none;
+            opacity: 0.3;
+        }
+
+        #game-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background: black;
+        }
+
+        canvas#gameCanvas {
+            border: 2px solid var(--matrix-green);
+            box-shadow: 0 0 20px rgba(0, 255, 65, 0.2);
+            background: black;
+        }
+
+        #ui-overlay {
+            position: absolute;
+            top: 20px;
+            text-align: center;
+            z-index: 5;
+            pointer-events: none;
+        }
+
+        .stats {
+            font-family: 'Courier Prime', monospace;
+            font-size: 2rem;
+            color: var(--matrix-green);
+            text-shadow: 0 0 10px var(--matrix-green);
+        }
+
+        #cursor {
+            position: fixed;
+            width: 20px; height: 20px;
+            border: 2px solid var(--neon-pink);
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 9999;
+            pointer-events: none;
+            box-shadow: 0 0 15px var(--neon-pink);
+        }
+
+        #input_video { display: none; }
+        
+        .msg {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-family: 'Courier Prime';
+            font-size: 1.5rem;
+            color: var(--matrix-green);
+            text-align: center;
+            letter-spacing: 2px;
+        }
+    </style>
+</head>
+<body>
+    <video id="input_video"></video>
+    <canvas id="output_canvas"></canvas>
+    <div id="cursor"></div>
+
+    <div id="game-container">
+        <div id="ui-overlay">
+            <div class="stats" id="score-display">SCORE: 0</div>
+        </div>
+        <div id="start-msg" class="msg">CRACKING_ENCRYPTION...<br>PINCH TO INJECT (FLAP)</div>
+        <canvas id="gameCanvas"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const scoreDisplay = document.getElementById('score-display');
+        const startMsg = document.getElementById('start-msg');
+        const cursor = document.getElementById('cursor');
+        const videoElement = document.getElementById('input_video');
+        const outputCanvas = document.getElementById('output_canvas');
+        const canvasCtx = outputCanvas.getContext('2d');
+
+        // Game constants
+        canvas.width = 400;
+        canvas.height = 600;
+        const GRAVITY = 0.25;
+        const FLAP_STRENGTH = -5.5;
+        const PIPE_SPEED = 2.5;
+        const PIPE_SPACING = 200;
+        const GAP_HEIGHT = 160;
+
+        let bird = { x: 50, y: 300, velocity: 0, radius: 12 };
+        let pipes = [];
+        let frameCount = 0;
+        let score = 0;
+        let gameActive = false;
+        let isPinching = false;
+
+        // Matrix Rain Background
+        const chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ$+-*/=%\"'#&_(),.;:?!\\|{}<>[]^~";
+        const fontSize = 14;
+        const drops = Array(Math.floor(canvas.width / fontSize)).fill(1);
+
+        function initGame() {
+            bird = { x: 50, y: 300, velocity: 0, radius: 12 };
+            pipes = [];
+            score = 0;
+            frameCount = 0;
+            scoreDisplay.innerText = "SCORE: 0";
+        }
+
+        function createPipe() {
+            const minPipeHeight = 50;
+            const randomHeight = Math.floor(Math.random() * (canvas.height - GAP_HEIGHT - minPipeHeight * 2)) + minPipeHeight;
+            pipes.push({
+                x: canvas.width,
+                top: randomHeight,
+                passed: false
+            });
+        }
+
+        function flap() {
+            if (!gameActive) {
+                gameActive = true;
+                startMsg.style.display = 'none';
+                initGame();
+            }
+            bird.velocity = FLAP_STRENGTH;
+        }
+
+        function update() {
+            if (!gameActive) return;
+
+            bird.velocity += GRAVITY;
+            bird.y += bird.velocity;
+
+            // Floor/Ceiling collision
+            if (bird.y + bird.radius > canvas.height || bird.y - bird.radius < 0) {
+                gameOver();
+            }
+
+            // Pipes logic
+            if (frameCount % 90 === 0) createPipe();
+
+            pipes.forEach((pipe, index) => {
+                pipe.x -= PIPE_SPEED;
+
+                // Collision detection
+                if (bird.x + bird.radius > pipe.x && bird.x - bird.radius < pipe.x + 50) {
+                    if (bird.y - bird.radius < pipe.top || bird.y + bird.radius > pipe.top + GAP_HEIGHT) {
+                        gameOver();
+                    }
+                }
+
+                // Score tracking
+                if (!pipe.passed && pipe.x + 50 < bird.x) {
+                    pipe.passed = true;
+                    score++;
+                    scoreDisplay.innerText = `SCORE: ${score}`;
+                }
+            });
+
+            // Clean up old pipes
+            if (pipes.length > 0 && pipes[0].x < -60) pipes.shift();
+
+            frameCount++;
+        }
+
+        function draw() {
+            // Matrix Trail Effect
+            ctx.fillStyle = "rgba(0, 0, 0, 0.15)";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Background Rain
+            ctx.fillStyle = "#003b00";
+            ctx.font = fontSize + "px monospace";
+            for (let i = 0; i < drops.length; i++) {
+                const text = chars.charAt(Math.floor(Math.random() * chars.length));
+                ctx.fillText(text, i * fontSize, drops[i] * fontSize);
+                if (drops[i] * fontSize > canvas.height && Math.random() > 0.975) drops[i] = 0;
+                drops[i]++;
+            }
+
+            // Draw Bird
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 20px monospace';
+            ctx.fillText(">@>", bird.x - 15, bird.y + 7);
+            ctx.fillStyle = 'rgba(0, 255, 65, 0.3)';
+            ctx.fillText(">@>", bird.x - 15, bird.y + 7); // Glow layer
+
+            // Draw Pipes
+            pipes.forEach(pipe => {
+                ctx.fillStyle = 'var(--matrix-green)';
+                ctx.font = '16px monospace';
+                const pipeWidthStr = "[#####]";
+
+                // Top pipe
+                for(let y = 0; y < pipe.top; y += 16) {
+                    ctx.fillText(pipeWidthStr, pipe.x, y);
+                }
+
+                // Bottom pipe
+                for(let y = pipe.top + GAP_HEIGHT + 16; y < canvas.height + 16; y += 16) {
+                    ctx.fillText(pipeWidthStr, pipe.x, y);
+                }
+            });
+        }
+
+        function gameOver() {
+            gameActive = false;
+            startMsg.innerHTML = `DECRYPTION_FAILED<br>SCORE: ${score}<br>PINCH TO RETRY`;
+            startMsg.style.display = 'block';
+        }
+
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop);
+        }
+
+        // MediaPipe Integration
+        function onResults(results) {
+            canvasCtx.save();
+            canvasCtx.clearRect(0, 0, outputCanvas.width, outputCanvas.height);
+            
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                
+                // Draw hand tracking overlay
+                drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {color: '#00ff41', lineWidth: 1});
+                drawLandmarks(canvasCtx, landmarks, {color: '#ffffff', radius: 1});
+
+                const indexTip = landmarks[8];
+                const thumbTip = landmarks[4];
+                
+                const x = indexTip.x * window.innerWidth;
+                const y = indexTip.y * window.innerHeight;
+
+                cursor.style.left = x + 'px';
+                cursor.style.top = y + 'px';
+
+                // Pinch detection logic
+                const distance = Math.hypot(indexTip.x - thumbTip.x, indexTip.y - thumbTip.y);
+                const pinchThreshold = 0.05;
+
+                if (distance < pinchThreshold) {
+                    if (!isPinching) {
+                        isPinching = true;
+                        cursor.style.backgroundColor = 'var(--matrix-green)';
+                        flap();
+                    }
+                } else {
+                    if (isPinching) {
+                        isPinching = false;
+                        cursor.style.backgroundColor = 'transparent';
+                    }
+                }
+            }
+            canvasCtx.restore();
+        }
+
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 1280, height: 720
+        });
+
+        window.onload = () => {
+            outputCanvas.width = window.innerWidth;
+            outputCanvas.height = window.innerHeight;
+            camera.start();
+            gameLoop();
+        };
+    </script>
+</body>
+</html>
